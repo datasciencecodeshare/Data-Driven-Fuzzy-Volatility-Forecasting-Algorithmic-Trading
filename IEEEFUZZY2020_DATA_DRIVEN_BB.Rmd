@@ -1,0 +1,135 @@
+---
+title: "Novel Data-Driven Fuzzy Algorithmic Volatility Forecasting Models with Applications to Algorithmic Trading -- Bollinger Bands"
+
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r package, include=FALSE}
+rm(list=ls())# Remove objects from enviornment
+pkg_list = c("quantmod", "TTR", 'zoo', 'tseries', 'fGarch','PEIP','tidyverse','gridExtra', 'gdata', 'xtable', "dygraphs")
+#ensure existing required packages are up to date:
+#update.packages(ask=FALSE, oldPkgs=pkg_list)
+# Install packages if needed
+for (pkg in pkg_list)
+{
+  # Try loading the library.
+  if ( ! library(pkg, logical.return=TRUE, character.only=TRUE) )
+    {
+         # If the library cannot be loaded, install it; then load.
+         install.packages(pkg)
+        library(pkg, character.only=TRUE)
+  }
+}
+```
+
+```{r, message=FALSE, warning = FALSE}
+start = "2010-01-01"; end = "2019-12-14"
+AAP<-getSymbols("AAP", from = start, to = end, source="yahoo", auto.assign=FALSE, return.class="xts")[, 6]
+AAPL<-getSymbols("AAPL", from = start, to = end,source="yahoo", auto.assign=FALSE, return.class="xts")[, 6]
+MSFT<-getSymbols("MSFT", from = start, to = end,source="yahoo", auto.assign=FALSE, return.class="xts")[, 6]
+GOOG<-getSymbols("goog", from = start, to = end,source="yahoo", auto.assign=FALSE, return.class="xts")[, 6]
+IBM<-getSymbols("ibm", from = start, to = end,source="yahoo", auto.assign=FALSE, return.class="xts")[, 6]
+AMZN<-getSymbols("AMZN", from = start, to = end,source="yahoo", auto.assign=FALSE, return.class="xts")[, 6] 
+price<-merge(AAP,AAPL,MSFT,GOOG,IBM,AMZN) #price data
+main.names<-c("AAP","AAPL","MSFT","GOOG","IBM","AMZN")
+head (price)
+nrow (price)
+number<-length(main.names)
+```
+
+```{r}
+#calcualte sign correlation rho
+rho.cal<-function(X){
+  rho.hat<-cor(sign(X-mean(X)), X-mean(X))
+  return(rho.hat)
+}
+```
+
+```{r}
+#data driven volatility estimate (DDVE)
+vol.cal<-function(y, rho){
+  return(mean(abs(y-mean(y)))/rho)
+} 
+```
+
+```{r}
+#calculate residual of price - SMA20
+res.function <- function(Pt){
+n<-20
+sma<-SMA(Pt, n)
+res<-na.omit(Pt-sma)
+return(res)
+}
+```
+
+```{r}
+#calcualte residuals for all stocks
+bb.res<-c()
+for (j in 1:number){
+bb.res [[j]] <- res.function (price[, j])
+}
+#summary statistics of residuals
+bb.res<- as.data.frame (bb.res)
+#calcualte sample sign correlations for residuals for all stocks
+rho<-apply(bb.res, MARGIN=2, FUN=rho.cal)
+#calculate degree of freedom
+nu<-c()
+for(j in 1:number){
+  fun <- function (x) rho[j]*(x-1)*beta(x/2,1/2)-2*sqrt(x-2)
+  nu[j] <- uniroot(fun, c(2, 15))$root
+}
+acf.s<-c(); acf.abs<-c(); acf.sq<-c()
+for(j in 1:number){
+  acf.s[j]<-acf(bb.res[, j], plot=FALSE)$acf[2]
+  acf.abs[j]<-acf(abs(bb.res[, j]), plot=FALSE)$acf[2]
+  acf.sq[j]<-acf(bb.res[, j]^2, plot=FALSE)$acf[2]
+}
+corr<-data.frame(apply(bb.res, 2, mean), apply(bb.res, 2, sd), 
+                 apply(bb.res, 2, kurtosis), 
+                 acf.s, acf.abs, acf.sq, rho, nu)
+rownames(corr)<-main.names
+colnames(corr)<-c("mean", "sd","kurtosis","series", "abs", "sq", "sign-rho", "df")
+xtable(corr, digits=3)
+```
+
+
+```{r}
+#plot data-driven Bollinger bands, j = 1, 2, 3, 4, 5, 6 for "AAP","AAPL","MSFT","GOOG","IBM","AMZN"
+j = 6
+Pt<-price[, j]
+n<-20
+sma<-SMA(Pt, n)
+res<-bb.res[[j]]; rho<-rho[j]; nu<-nu[j] 
+sd.sma<-rollapply(Pt, width = 20, FUN = sd, by.column = TRUE, fill = NA, align = "right")
+bb.lower.sd<-sma-2*sd.sma
+bb.upper.sd<-sma+2*sd.sma
+vol.sma<-rollapply(Pt, width = 20, FUN = vol.cal, rho = rho, by.column = TRUE, fill = NA,
+                 align = "right")
+bbt.lower.vol1<-sma-qstd(0.975, mean = 0, sd = 1, nu=nu)*vol.sma
+bbt.upper.vol1<-sma+qstd(0.975, mean = 0, sd = 1, nu=nu)*vol.sma
+bbt.lower.vol2<-sma-qstd(0.995, mean = 0, sd = 1, nu=nu)*vol.sma
+bbt.upper.vol2<-sma+qstd(0.995, mean = 0, sd = 1, nu=nu)*vol.sma
+BBData<-na.omit(as.data.frame(cbind(Pt, sma, bb.lower.sd, bb.upper.sd, bbt.lower.vol1, bbt.upper.vol1, bbt.lower.vol2, bbt.upper.vol2)))
+colnames(BBData)<-c("Price", "SMA", "BBL_SD", "BBU_SD", "BBL_VOL1", "BBU_VOL1", "BBL_VOL2", "BBU_VOL2")
+```
+
+```{r}
+dygraph(BBData, main = paste('Bollinger Bands:', main.names[j]))%>%
+dySeries('Price', label = 'Closing price', col = "black") %>%
+dySeries('SMA', label = 'SMA20', col = "red") %>%
+dySeries('BBL_SD', label = 'BBL_SD', col = "blue") %>%
+dySeries('BBU_SD', label = 'BBU_SD', col = "blue") %>%  
+dySeries('BBL_VOL1', label = 'BBL_VOL_0.05', col = "green") %>%
+dySeries('BBU_VOL1', label = 'BBU_VOL_0.05', col = "green") %>% 
+dySeries('BBL_VOL2', label = 'BBL_VOL_0.01', col = "purple") %>%
+dySeries('BBU_VOL2', label = 'BBU_VOL_0.01', col = "purple") %>%  
+dyRangeSelector(height = 30) %>% 
+dyLegend(show = "follow")
+```
+
